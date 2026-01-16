@@ -53,7 +53,7 @@ signs:
       - "${artifact}"
 release:
   prerelease: auto
-  make_latest: '{{ and (eq .Branch "main") (not (contains .Tag "-beta.")) }}'
+  make_latest: '{{ and (eq .Env.RELEASE_BRANCH "main") (not (contains .Tag "-beta.")) }}'
   extra_files:
     - glob: 'terraform-registry-manifest.json'
       name_template: '{{ .ProjectName }}_{{ .Version }}_manifest.json'
