@@ -38,7 +38,7 @@ jobs:
     steps:
       - name: Validation of version format
         run: |
-          echo "${{ inputs.version_number }}" | grep -P '^v\d+\.\d+\.\d+((-pre[A-Za-z0-9-]*)|(-beta\.\d+))?$'
+          echo "${{ inputs.version_number }}" | grep -P '^v\d+\.\d+\.\d+((-pre[A-Za-z0-9-]*)|(-beta\d+))?$'
       - name: Checkout
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
         with:
