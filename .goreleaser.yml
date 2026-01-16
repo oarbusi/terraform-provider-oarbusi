@@ -52,7 +52,8 @@ signs:
       - "--detach-sign"
       - "${artifact}"
 release:
-  prerelease: auto
+  # Set to false so beta releases are visible in the Terraform Registry (pre-releases are ignored by the registry)
+  prerelease: 'false'
   make_latest: '{{ and (eq .Env.RELEASE_BRANCH "main") (not (contains .Tag "-beta")) }}'
   extra_files:
     - glob: 'terraform-registry-manifest.json'
