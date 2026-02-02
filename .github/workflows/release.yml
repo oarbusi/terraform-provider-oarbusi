@@ -1,13 +1,23 @@
 name: "New Release"
-run-name: "Release ${{ inputs.version_number }} (skip tests: ${{ inputs.skip_tests }}, use existing tag: ${{ inputs.use_existing_tag}})"
+run-name: "Release ${{ inputs.version_number }}${{ inputs.base_branch != '' && inputs.base_branch != 'main' && format(' from {0}', inputs.base_branch) || '' }} (skip tests: ${{ inputs.skip_tests }}, use existing tag: ${{ inputs.use_existing_tag}})"
 
-# Used for creating a new release. This workflow will run qa acceptance tests, create a new tag, and generate the release with GoReleaser.
+# Used for creating a new release. This workflow will create a new tag and generate the release with GoReleaser.
+# Optional: Set base_branch (e.g., v1-lts) for backport releases.
+# Note: After a backport release, CHANGELOG.md changes from the base branch should be manually merged to main branch.
 on:
   workflow_dispatch:
     inputs:
       version_number:
         description: "Version number (e.g., v1.0.0, v1.0.0-pre, v1.0.0-pre1)"
         required: true
+      base_branch:
+        description: "Base branch for the release"
+        required: false
+        type: choice
+        default: "main"
+        options:
+          - "main"
+          - "v1-lts"
       skip_tests:
         description: "Set value to `true` to skip QA acceptance tests, default is `false`"
         default: "false"
@@ -23,26 +33,57 @@ jobs:
       creates_new_tag: ${{ steps.evaluate_inputs.outputs.creates_new_tag }}
       is_official_release: ${{ steps.evaluate_inputs.outputs.is_official_release }}
       runs_tests: ${{ steps.evaluate_inputs.outputs.runs_tests }}
+      target_branch: ${{ steps.evaluate_inputs.outputs.target_branch }}
+      is_backport_release: ${{ steps.evaluate_inputs.outputs.is_backport_release }}
     steps:
       - id: evaluate_inputs
+        env:
+          BASE_BRANCH: ${{ inputs.base_branch }}
+          VERSION_NUMBER: ${{ inputs.version_number }}
+          USE_EXISTING_TAG: ${{ inputs.use_existing_tag }}
+          SKIP_TESTS: ${{ inputs.skip_tests }}
         run: |
+          TARGET_BRANCH="${BASE_BRANCH:-main}"
+          IS_BACKPORT=$(if [ "$TARGET_BRANCH" != "main" ]; then echo 'true'; else echo 'false'; fi)
           {
-            echo "creates_new_tag=$(if [ '${{ inputs.use_existing_tag }}' = 'true' ]; then echo 'false'; else echo 'true'; fi)"
-            echo "is_official_release=$(if echo '${{ inputs.version_number }}' | grep -q 'pre'; then echo 'false'; else echo 'true'; fi)"
-            echo "runs_tests=$(if [ '${{ inputs.skip_tests }}' = 'true' ]; then echo 'false'; else echo 'true'; fi)"
+            echo "creates_new_tag=$(if [ "$USE_EXISTING_TAG" = 'true' ]; then echo 'false'; else echo 'true'; fi)"
+            echo "is_official_release=$(if echo "$VERSION_NUMBER" | grep -q 'pre'; then echo 'false'; else echo 'true'; fi)"
+            echo "runs_tests=$(if [ "$SKIP_TESTS" = 'true' ]; then echo 'false'; else echo 'true'; fi)"
+            echo "target_branch=$TARGET_BRANCH"
+            echo "is_backport_release=$IS_BACKPORT"
           } >> "$GITHUB_OUTPUT"
 
   validate-inputs:
+    needs: [release-config]
     runs-on: ubuntu-latest
     permissions: {}
     steps:
-      - name: Validation of version format
+      - name: Validate branch exists
+        if: inputs.base_branch != 'main'
+        env:
+          BASE_BRANCH: ${{ inputs.base_branch }}
         run: |
-          echo "${{ inputs.version_number }}" | grep -P '^v\d+\.\d+\.\d+((-pre[A-Za-z0-9-]*)|(-beta\d+))?$'
+          git ls-remote --exit-code --heads "https://github.com/${{ github.repository }}" "$BASE_BRANCH" || {
+            echo "Error: Branch '$BASE_BRANCH' does not exist on remote"
+            exit 1
+          }
+      - name: Validation of version format
+        env:
+          VERSION_NUMBER: ${{ inputs.version_number }}
+          TARGET_BRANCH: ${{ needs.release-config.outputs.target_branch }}
+        run: |
+          if [[ "$TARGET_BRANCH" =~ ^v([0-9]+)-lts$ ]]; then
+            # LTS branch: only allow matching major version (e.g., v1-lts allows v1.x.x)
+            MAJOR="${BASH_REMATCH[1]}"
+            echo "$VERSION_NUMBER" | grep -P "^v${MAJOR}\.\d+\.\d+((-pre[A-Za-z0-9-]*)|(-beta\d+))?$"
+          else
+            # Standard release from main: allow any version
+            echo "$VERSION_NUMBER" | grep -P '^v\d+\.\d+\.\d+((-pre[A-Za-z0-9-]*)|(-beta\d+))?$'
+          fi
       - name: Checkout
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
         with:
-          ref: ${{ inputs.use_existing_tag == 'true' && inputs.version_number || 'main' }}
+          ref: ${{ inputs.use_existing_tag == 'true' && inputs.version_number || needs.release-config.outputs.target_branch }}
 
   create-tag:
     runs-on: ubuntu-latest
@@ -57,7 +98,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
         with:
-          ref: "main"
+          ref: ${{ needs.release-config.outputs.target_branch }}
       - name: Get the latest commit SHA
         id: get-sha
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
@@ -73,7 +114,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    needs: [create-tag]
+    needs: [release-config, create-tag]
     if: >-
       !cancelled()
       && !contains(needs.*.result, 'failure')
@@ -83,6 +124,7 @@ jobs:
         with:
           # Allow goreleaser to access older tag information.
           fetch-depth: 0
+          ref: ${{ inputs.version_number }}
       - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
         with:
           go-version-file: "go.mod"
@@ -102,4 +144,4 @@ jobs:
           # GitHub sets the GITHUB_TOKEN secret automatically.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
-          RELEASE_BRANCH: main
+          RELEASE_BRANCH: ${{ needs.release-config.outputs.target_branch }}
